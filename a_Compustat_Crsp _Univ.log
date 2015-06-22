@@ -1,0 +1,391 @@
+1                                                          The SAS System                                17:59 Friday, June 12, 2015
+
+NOTE: Unable to open SASUSER.REGSTRY. WORK.REGSTRY will be opened instead.
+NOTE: All registry changes will be lost at the end of the session.
+
+WARNING: Unable to copy SASUSER registry to WORK registry. Because of this, you will not see registry customizations during this 
+         session.
+NOTE: Unable to open SASUSER.PROFILE. WORK.PROFILE will be opened instead.
+NOTE: All profile changes will be lost at the end of the session.
+NOTE: Copyright (c) 2002-2012 by SAS Institute Inc., Cary, NC, USA. 
+NOTE: SAS (r) Proprietary Software 9.4 (TS1M1) 
+      Licensed to UNIVERSITY OF NORTH CAROLINA CHAPEL HILL - SFA T&R, Site 70084277.
+NOTE: This session is executing on the X64_7PRO  platform.
+
+
+
+NOTE: Updated analytical products:
+      
+      SAS/STAT 13.1
+      SAS/ETS 13.1
+      SAS/OR 13.1
+      SAS/IML 13.1
+      SAS/QC 13.1
+
+NOTE: Additional host information:
+
+ X64_7PRO WIN 6.1.7601 Service Pack 1 Workstation
+
+NOTE: SAS initialization used:
+      real time           0.52 seconds
+      cpu time            0.35 seconds
+      
+1          /*
+2          
+3          AUTHOR:          F. Dimas Pena Romera
+4          START DATE:      27/12/14
+5          LAST MODIFIED:   08/01/15	
+6          PURPOSE: Download selected COMPUSTAT VARIABLES from Compustat annual file, merge with
+6        ! crsp permno using wrds linkfile and
+7          for selected YEARS, merge with CRSP using merge link and SELECTED LINKS, spit
+7        ! Compustat-Crsp Universe
+8          
+9          INPUT:
+10         	1. location of raw compustat and linkfile after rawcomp.
+11         	2. location of destination merged file after dimmod.
+12         	3. location of descriptives (number of unique gvkeys linked per year in a csv file).
+13         	4. beg fyear and end fyear after.
+14         	5. variables requested from compustat annual.
+15         
+16         OUTPUT:
+17         	1. dimmod.filename = compustat-crsp merged file with requested compustat variables.
+18         */
+19         
+20         
+21         *include macros;
+2                                        The SAS System               17:59 Friday, June 12, 2015
+
+22         %include 'C:\Users\penarome\Desktop\Academic\UNCPP2HL\Scripts\macros.sas';
+172        
+173        
+174        *I define my local permanent libraries in which I will modify and update outputs.;
+175        libname dimmod 'C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified' ;
+NOTE: Libref DIMMOD was successfully assigned as follows: 
+      Engine:        V9 
+      Physical Name: C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified
+176        libname fig 'C:\Users\penarome\Desktop\Academic\UNCPP2HL\HLWriting';
+NOTE: Libref FIG was successfully assigned as follows: 
+      Engine:        V9 
+      Physical Name: C:\Users\penarome\Desktop\Academic\UNCPP2HL\HLWriting
+177        
+178        *I define libraries in which to locate and extract rawdata. all these directories will
+178      !  be deleted at the end of the project;
+179        
+180        libname rawcomp 'C:\Users\penarome\Desktop\Academic\RAW DATABASES\RCompustat_2015' ;
+NOTE: Libref RAWCOMP was successfully assigned as follows: 
+      Engine:        V9 
+      Physical Name: C:\Users\penarome\Desktop\Academic\RAW DATABASES\RCompustat_2015
+181        
+182        
+183        
+184        * get required data from compustat annual;
+185        
+186        *	comp.fundq (if quarterly data, change variables as well, just add q to the variable)
+186      ! ;
+187        *	Date range-- applied to FYEAR (Fiscal Year);
+188        %let fyear1= 1984;
+189        %let fyear2= 2014;
+190        
+191        *  Selected data items (GVKEY, DATADATE, FYEAR and FYR are automatialy included);
+192        *I also require;
+193        %let vars=
+194        			substr(CUSIP,1, 8) as CUSIP,
+195        			fyear,
+196        			conm,
+197        			gvkey,
+198        			datadate,
+199        			fyr,
+200        			seq,
+201        
+202        				PRCC_C	AS	pxfye	,
+203        				CSHO	AS	shsfye	,
+204        				NI	AS	ni	,
+205        				IBCOM	AS	ibxd	,
+206        				SSTK	AS	cpsale	,
+207        				PRSTKC	AS	cppur	,
+208        				DVC	AS	div	,
+209        				CEQ	AS	ce	,
+210        				AT	AS	ta	,
+211        				XINT	AS	intexp	,
+212        				XRD	AS	rd	,
+3                                        The SAS System               17:59 Friday, June 12, 2015
+
+213        				IB	AS	ibx	,
+214        				XINT	AS	junk	,
+215        				TXDI	AS	isdt	,
+216        				ITCI	AS	isitc	,
+217        				TXT	AS	itx	,
+218        				CSHPRI	AS	shseps	,
+219        				PSTKRV	AS	pfdred	,
+220        				PSTKL	AS	pfdliq	,
+221        				PSTK	AS	pfdpar	,
+222        				LT	AS	tl	,
+223        				TXDITC	AS	bsdt	,
+224        				SPI	AS	spec,	
+225        				CAPX;
+226        
+227        
+228        
+229        			
+230        			
+231        
+232        proc sql ;
+233               create table compa as
+234               select distinct &vars
+235               from rawcomp.R_2015_funda
+236               where (fyear between &fyear1 and &fyear2) & (Consol='C') & (Datafmt='STD' and
+236      ! Popsrc='D' and Indfmt= 'INDL')
+237               order by gvkey, datadate;
+NOTE: Data file RAWCOMP.R_2015_FUNDA.DATA is in a format that is native to another host, or the 
+      file encoding does not match the session encoding. Cross Environment Data Access will be 
+      used, which might require additional CPU resources and might reduce performance.
+NOTE: Table WORK.COMPA created, with 330549 rows and 31 columns.
+
+238        quit;
+NOTE: PROCEDURE SQL used (Total process time):
+      real time           42.16 seconds
+      cpu time            14.30 seconds
+      
+
+239        
+240        *get sic codes from names file;
+241        proc sql ;
+242               create table compa as
+243               select distinct A. *, B.SIC as dnum
+244               from compa A, rawcomp.R_2015_names B
+245               where (A.GVKEY=B.GVKEY)
+246               order by gvkey, datadate;
+NOTE: Data file RAWCOMP.R_2015_NAMES.DATA is in a format that is native to another host, or the 
+      file encoding does not match the session encoding. Cross Environment Data Access will be 
+      used, which might require additional CPU resources and might reduce performance.
+WARNING: This CREATE TABLE statement recursively references the target table. A consequence of 
+         this is a possible data integrity problem.
+NOTE: Table WORK.COMPA created, with 330549 rows and 32 columns.
+
+247        quit;
+4                                        The SAS System               17:59 Friday, June 12, 2015
+
+NOTE: PROCEDURE SQL used (Total process time):
+      real time           0.78 seconds
+      cpu time            0.87 seconds
+      
+
+248        
+249        *delete duplicates by gvkey datadate (none found);
+250        proc sort data =compa nodupkey;
+251        by gvkey datadate;
+252        run;
+
+NOTE: There were 330549 observations read from the data set WORK.COMPA.
+NOTE: 0 observations with duplicate key values were deleted.
+NOTE: The data set WORK.COMPA has 330549 observations and 32 variables.
+NOTE: PROCEDURE SORT used (Total process time):
+      real time           0.34 seconds
+      cpu time            0.26 seconds
+      
+
+253        
+254        
+255        *I generate variables for the beginning and end of fiscal year (these will be used to
+255      ! link with crsp);
+256         data compa;
+257           		set compa;
+258        		format endfyr begfyr date9.;
+259        		endfyr=datadate;
+260           		begfyr= intnx('month',endfyr,-11,'beg');
+261        		run;
+
+NOTE: There were 330549 observations read from the data set WORK.COMPA.
+NOTE: The data set WORK.COMPA has 330549 observations and 34 variables.
+NOTE: DATA statement used (Total process time):
+      real time           1.47 seconds
+      cpu time            0.21 seconds
+      
+
+262        
+263        
+264        *I get the compu crsp merge table
+265        *My compustat-crsp universe will be defined as the set of compustat firms with a valid
+265      !  link in the linktable. I limit linktypes to LU LC and LS (this captures
+266        most compustat-crsp links without duplicated entries). Also, compustat datadate (end
+266      ! of fiscal year) is required to be between the valid link ranges in linktable (more
+267        linking options in the square below);
+268        
+269        proc sql;
+270        	create table compa as select distinct
+271        	a.*, b.lpermno as permno, b.linktype, b.linkprim, b.liid, b.usedflag, b.LINKDT,
+271      ! b.LINKENDDT
+272            from compa as a, rawcomp.R_2015_ccmxpf_linktable as b
+273        	where (a.gvkey = b.gvkey)
+274            and b.linktype in ('LU', 'LC', 'LS')
+5                                        The SAS System               17:59 Friday, June 12, 2015
+
+275        	and (b.LINKDT <= a.endfyr or b.LINKDT = .B)
+276        	and (a.endfyr <= b.LINKENDDT or b.LINKENDDT = .E);
+NOTE: Data file RAWCOMP.R_2015_CCMXPF_LINKTABLE.DATA is in a format that is native to another 
+      host, or the file encoding does not match the session encoding. Cross Environment Data 
+      Access will be used, which might require additional CPU resources and might reduce 
+      performance.
+WARNING: This CREATE TABLE statement recursively references the target table. A consequence of 
+         this is a possible data integrity problem.
+NOTE: Table WORK.COMPA created, with 211927 rows and 41 columns.
+
+277        	quit;
+NOTE: PROCEDURE SQL used (Total process time):
+      real time           1.24 seconds
+      cpu time            0.88 seconds
+      
+
+278        
+279        	/************************************************************************************
+279      ! ************************
+280          * The previous condition requires the end of fiscal year to fall within the link
+280      ! range.                    *
+281          *
+281      !                        *
+282          * A more relaxed condition would require any part of the fiscal year to be within
+282      ! the link range:          *
+283          * (b.LINKDT <= a.endfyr or missing(b.LINKDT) = 1) and (b.LINKENDDT >= a.begfyr or
+283      ! missing(b.LINKENDDT)= 1);*
+284          * or a more strict condition would require the entire fiscal year to be within the
+284      ! link range :            *
+285          * (b.LINKDT <= a.begfyr or missing(b.LINKDT) = 1) and (a.endfyr <= b.LINKENDDT or
+285      ! b.LINKENDDT= .E)         *
+286          *
+286      !                        *
+287          * If these conditions are used, we suggest using the result data set from the
+287      ! "collapsing" procedure -     *
+288          * which is shown in sample program ccm_lnktable.sas - to replace
+288      ! crsp.ccmxpf_linktable.                    *
+289          ************************************************************************************
+289      ! ************************/
+290        
+291        data compa; set compa;
+292        	if missing(permno)=0;
+293        	run;
+
+NOTE: There were 211927 observations read from the data set WORK.COMPA.
+NOTE: The data set WORK.COMPA has 211927 observations and 41 variables.
+NOTE: DATA statement used (Total process time):
+      real time           0.09 seconds
+      cpu time            0.11 seconds
+      
+
+294        *no gvkey-permno-datadate duplicates
+295        
+6                                        The SAS System               17:59 Friday, June 12, 2015
+
+296        *!!!!!!!!I notice there are still some duplicated gvkey-datadate combinations. I sort
+296      ! firms on gvkey datadate liid and then drop duplicates.
+297        	This keeps the observation with the lowest liid value.;
+298        
+299        proc sort data=compa out=compa nodupkey;
+300        	by gvkey datadate permno;
+301        	run;
+
+NOTE: There were 211927 observations read from the data set WORK.COMPA.
+NOTE: 0 observations with duplicate key values were deleted.
+NOTE: The data set WORK.COMPA has 211927 observations and 41 variables.
+NOTE: PROCEDURE SORT used (Total process time):
+      real time           0.13 seconds
+      cpu time            0.20 seconds
+      
+
+302        
+303        proc sort data=compa out=compa;
+304        	by gvkey datadate liid;
+305        	run;
+
+NOTE: There were 211927 observations read from the data set WORK.COMPA.
+NOTE: The data set WORK.COMPA has 211927 observations and 41 variables.
+NOTE: PROCEDURE SORT used (Total process time):
+      real time           0.10 seconds
+      cpu time            0.14 seconds
+      
+
+306        
+307        proc sort data=compa out=compa nodupkey;
+308        	by gvkey datadate;
+309        	run;
+
+NOTE: There were 211927 observations read from the data set WORK.COMPA.
+NOTE: 2066 observations with duplicate key values were deleted.
+NOTE: The data set WORK.COMPA has 209861 observations and 41 variables.
+NOTE: PROCEDURE SORT used (Total process time):
+      real time           0.16 seconds
+      cpu time            0.21 seconds
+      
+
+310        
+311        *I generate dimmod.compmerged as our Compustat Crsp Univ;
+312        proc sort data=compa out=dimmod.compcrsp;
+313        by gvkey datadate;
+314        run;
+
+NOTE: Input data set is already sorted; it has been copied to the output data set.
+NOTE: There were 209861 observations read from the data set WORK.COMPA.
+NOTE: The data set DIMMOD.COMPCRSP has 209861 observations and 41 variables.
+NOTE: PROCEDURE SORT used (Total process time):
+      real time           0.11 seconds
+      cpu time            0.06 seconds
+7                                        The SAS System               17:59 Friday, June 12, 2015
+
+      
+
+315        
+316        *I generate a sata file dimmod.comperged as my Compustat Crsp Universe;
+317        proc export
+318        data= dimmod.compcrsp
+319        dbms=dta
+320        outfile="C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified\compcrsp.dta"
+321        replace;
+322        run;
+
+NOTE: The export data set has 209861 observations and 41 variables.
+NOTE: "C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified\compcrsp.dta" file was successfully 
+      created.
+NOTE: PROCEDURE EXPORT used (Total process time):
+      real time           0.26 seconds
+      cpu time            0.20 seconds
+      
+
+323        
+324        
+325        
+326        *clear temporary libraries;
+327        libname rawcomp clear;
+NOTE: Libref RAWCOMP has been deassigned.
+328        
+329        /*just to contrast whether my compustat-crsp universe is consistent with prior
+329      ! literature, I look at how many distinct gvkeys I get per year
+330        	(numbers are very reasonable - minor differences with
+330      ! http://gridgreed.blogspot.com.es/2012/12/on-merging-crsp-and-compustat-data.html)
+331        	I export to csv to get tables in excel;
+332        
+333        proc sort data=dimmod.compcrsp out=dimmod.compcrsp;
+334        	by fyear;
+335        	run;
+336        
+337        proc sql;
+338        	create table fig.yearobs
+339        	as select a.fyear, n(gvkey) as n
+340        	from dimmod.compcrsp a
+341        	group by fyear;
+342        	quit;
+343        
+344        proc export data=fig.yearobs (where=(fyear ge 1981))
+345             outfile='C:\Users\penarome\Desktop\Academic\UNCPP2HL\HLWriting\yearobs.csv'
+346             dbms=csv
+347             replace;
+348        run;
+349        
+350        
+351        	
+
+NOTE: SAS Institute Inc., SAS Campus Drive, Cary, NC USA 27513-2414
+8                                        The SAS System               17:59 Friday, June 12, 2015
+
+NOTE: The SAS System used:
+      real time           47.56 seconds
+      cpu time            17.87 seconds
+      
