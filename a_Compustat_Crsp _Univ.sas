@@ -73,7 +73,9 @@ libname rawcomp 'C:\Users\penarome\Desktop\Academic\RAW DATABASES\RCompustat_201
 				LT	AS	tl	,
 				TXDITC	AS	bsdt	,
 				SPI	AS	spec,	
-				CAPX;
+				CAPX,
+				OPREPSX;
+
 
 
 
@@ -81,7 +83,7 @@ libname rawcomp 'C:\Users\penarome\Desktop\Academic\RAW DATABASES\RCompustat_201
 			
 
 proc sql ;
-       create table compa as
+       create table _compa as
        select distinct &vars
        from rawcomp.R_2015_funda
        where (fyear between &fyear1 and &fyear2) & (Consol='C') & (Datafmt='STD' and Popsrc='D' and Indfmt= 'INDL')
@@ -90,22 +92,22 @@ quit;
 
 *get sic codes from names file; 
 proc sql ;
-       create table compa as
+       create table _compa as
        select distinct A. *, B.SIC as dnum
-       from compa A, rawcomp.R_2015_names B
+       from _compa A, rawcomp.R_2015_names B
        where (A.GVKEY=B.GVKEY)
        order by gvkey, datadate;
 quit;
 
 *delete duplicates by gvkey datadate (none found);
-proc sort data =compa nodupkey;
+proc sort data =_compa nodupkey;
 by gvkey datadate;
 run;
 
 
 *I generate variables for the beginning and end of fiscal year (these will be used to link with crsp);
- data compa;
-   		set compa;
+ data _compa;
+   		set _compa;
 		format endfyr begfyr date9.;
 		endfyr=datadate;
    		begfyr= intnx('month',endfyr,-11,'beg');
@@ -118,9 +120,9 @@ most compustat-crsp links without duplicated entries). Also, compustat datadate 
 linking options in the square below);
 
 proc sql; 
-	create table compa as select distinct
+	create table _compa as select distinct
 	a.*, b.lpermno as permno, b.linktype, b.linkprim, b.liid, b.usedflag, b.LINKDT, b.LINKENDDT
-    from compa as a, rawcomp.R_2015_ccmxpf_linktable as b
+    from _compa as a, rawcomp.R_2015_ccmxpf_linktable as b
 	where (a.gvkey = b.gvkey) 
     and b.linktype in ('LU', 'LC', 'LS') 
 	and (b.LINKDT <= a.endfyr or b.LINKDT = .B) 
@@ -139,7 +141,7 @@ proc sql;
   * which is shown in sample program ccm_lnktable.sas - to replace crsp.ccmxpf_linktable.                    *
   ************************************************************************************************************/
  
-data compa; set compa;
+data _compa; set _compa;
 	if missing(permno)=0;
 	run; 
 *no gvkey-permno-datadate duplicates
@@ -147,20 +149,38 @@ data compa; set compa;
 *!!!!!!!!I notice there are still some duplicated gvkey-datadate combinations. I sort firms on gvkey datadate liid and then drop duplicates. 
 	This keeps the observation with the lowest liid value.; 
 
-proc sort data=compa out=compa nodupkey;
+proc sort data=_compa out=_compa nodupkey;
 	by gvkey datadate permno;
 	run;
 
-proc sort data=compa out=compa;
+proc sort data=_compa out=_compa;
 	by gvkey datadate liid;
 	run;
 
-proc sort data=compa out=compa nodupkey;
+proc sort data=_compa out=_compa nodupkey;
 	by gvkey datadate;
 	run;
 
+
+
+* I add announcement dates from compustat quarterly;
+
+data _announce; set rawcomp.R_2015_fundq;
+	keep gvkey datadate rdq fqtr;
+	run; 
+
+
+proc sql ;
+       create table _compa as
+       select distinct A. *, B.fqtr, B.rdq 
+       from _compa A, _announce B
+       where (A.GVKEY=B.GVKEY) and (A.DATADATE=B.DATADATE)
+       order by gvkey, datadate;
+quit;
+
+
 *I generate dimmod.compmerged as our Compustat Crsp Univ;
-proc sort data=compa out=dimmod.compcrsp;
+proc sort data=_compa out=dimmod.compcrsp;
 by gvkey datadate;
 run;
 
@@ -173,9 +193,17 @@ replace;
 run;
 
 
-
 *clear temporary libraries;
 libname rawcomp clear;
+
+
+*clean the house;
+
+proc datasets lib=work memtype=data nolist;
+delete _: ;
+quit;
+
+
 
 /*just to contrast whether my compustat-crsp universe is consistent with prior literature, I look at how many distinct gvkeys I get per year
 	(numbers are very reasonable - minor differences with http://gridgreed.blogspot.com.es/2012/12/on-merging-crsp-and-compustat-data.html)

@@ -18,7 +18,8 @@ OUTPUT:
 
 
 *include macros;
-%include 'C:\Users\penarome\Desktop\Academic\UNCPP2HL\Scripts\macros.sas';
+%include 'C:\Users\penarome\Desktop\Academic\Generic_code\Dimas\macros.sas';
+%include 'C:\ado\plus\s\stata_wrapper.sas';
 
 *I define my local permanent libraries in which I will modify and update outputs.;
 libname dimmod 'C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified' ;
@@ -28,37 +29,197 @@ libname fig 'C:\Users\penarome\Desktop\Academic\UNCPP2HL\HLWriting';
 
 libname rawcomp 'C:\Users\penarome\Desktop\Academic\RAW DATABASES\RCompustat_2015' ;
 libname rawibes 'C:\Users\penarome\Desktop\Academic\RAW DATABASES\RIbes_2015' ;
+libname rawcrsp 'C:\Users\penarome\Desktop\Academic\RAW DATABASES\RCrsp_2015';
 /*
 *-------------- DOWNLOAD required files from wrds and store them in rawibes; 
 
-%wrds;
+%let wrds = wrds.wharton.upenn.edu 4016;
+options comamid=TCP remote=WRDS;
+signon username="fdimaspr" password="481766Qr$";
 rsubmit ;
 libname ibes ' /wrds/ibes/sasdata' ;
 option msglevel =i mprint source;
-proc download data=ibes.Nactpsum_epsUS out=rawibes.Nactpsum_epsUS;
-run ;
-proc download data=ibes.NSTATSUM_EPSUS out=rawibes.NSTATSUM_EPSUS;
-run ;
-proc download data=ibes.NDET_EPSUS out=rawibes.NSTATSUM_EPSUS;
-run ;
-*Create Permno-IBES ticker link
-%include '/wrds/ibes/samples/iclink.sas'; *create ibes ticker - crsp permno link file in home direct;
-proc download data=home.iclink out=rawibes.iclinc;
+proc download data=ibes.DETU_EPSUS out=rawibes.DETU_EPSUS;
 run ;
 endrsubmit ;
 *-----------------------------------------------------------------------------------------------------------------------------------
 */
 
 
-*keep forecasts for earnings per share and only annual forecasts (Note that annual forecasts are FPI==1 versus quarterly forecasts with FPI==6 or others);
-data sum;
-set rawibes.NSTATSUM_EPSUS;
-if measure="EPS" and fpi in ("1");
-run;
-*get in stock price, which will be used as deflator below,
-ticker is the unique firm identifier, STATPERS is the time when the consensus forecasts are calcualted;
+*I previously created compustat crsp universe that includes anouncement dates from compustat quarterly. I link compcrsp universe to ibes ticker using iclinc;
+* i consider links with score under 4 to be valid;
 proc sql;
-create table sum as select a.*, b.PRICE, b.SHOUT from sum a left join rawibes.Nactpsum_epsUS b
+create table _announce as select a.gvkey, a.permno, a.fyear, a.datadate, a.rdq, b.ticker from dimmod.compcrsp a left join rawibes.iclinc b
+on a.permno=b.permno
+where (b.score le 4) and b.permno ne .;
+quit;
+
+PROC SORT DATA=_announce;
+BY permno datadate rdq;
+RUN;
+
+*I attach announcement dates from ibes;
+data temp;
+set rawibes.NSTATSUM_EPSUS;
+if measure="EPS" and fpi in ("1") and fiscalp=("ANN");
+keep FPEDATS ANNDATS_ACT TICKER;
+run;
+
+PROC SORT DATA=_temp nodupkey;
+BY TICKER FPEDATS ANNDATS_ACT;
+RUN;
+
+proc sql;
+create table _announce2 as select a.*, b.ANNDATS_ACT as rdqibes from _announce a left join _temp b
+on (a.ticker=b.ticker) and (a.datadate=b.FPEDATS);
+quit;
+
+*whenever announcement date is missing both from compustat and ibes, crease pseudo announcement date 90 days after fiscal year end;
+*generate rdqfinal, compustat is priority, if compustat is missing then use ibes, if both missing then add 90 days to fiscalyearend;
+
+data _announce3; set _announce2;
+	if missing(rdq) and missing(rdqibes) then rdqps= intnx('day',datadate,+90,'beg');
+run;
+
+data dimmod.announce; set _announce3;
+	format datadate rdq rdqibes rdqps rdqfinal date9.;
+	if not(missing(rdq)) then rdqfinal=rdq;
+	if missing(rdqfinal) then rdqfinal=rdqibes;
+	if missing(rdqfinal) then rdqfinal=rdqps;
+run;
+
+*check duplicates;
+PROC SORT DATA=dimmod.announce nodupkey;
+BY permno fyear;
+RUN;
+
+
+* I generate a variable that includes next fiscal year end - i use stata for this for convenience - the fdadatade is the fiscal year end of year t+1, the 
+relevant forecast in order to compute the forecast error;
+%stata_wrapper; 
+data test (keep=permno datadate fyear);
+set dimmod.announce;
+run;
+
+%stata_wrapper(code) datalines;
+xtset permno fyear, yearly
+gen fdatadate=f.datadate
+savasas _all using C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified\announcenext.sas7bdat , replace
+;;;;
+
+proc sql;
+create table dimmod.announcenext as select a.*, b.fdatadate from dimmod.announce a left join dimmod.announcenext b
+on (a.permno=b.permno) and (a.datadate=b.datadate);
+quit;
+
+data dimmod.announcenext; set dimmod.announcenext; 
+if fdatadate eq . then fdatadate=intnx('month', datadate, +12, 'end') ;
+format datadate fdatadate rdq rdqibes rdqps rdqfinal date9.;
+run;
+
+*dimmod.announcenext contains gvkey permno datadate fdatadate rdqfinal;
+
+*I merge my dimmod.announcenext file to UNANDJUSTED DETAIL file by ibes ticker and fdatadate=fpedats. I then keep the nearest forecast prior to the announcement date (rdqfinal).
+;
+
+proc sql;
+create table _fcastrdq as select a.*, b.rdqfinal, b.datadate, b.fdatadate, b.permno from rawibes.DETU_EPSUS a inner join dimmod.announcenext b
+on (a.ticker=b.ticker) and (a.FPEDATS=b.fdatadate) 
+where a.measure="EPS" and a.fpi in ("2") and a.report_curr=("USD");
+quit;
+
+data _fcastrdq; set _fcastrdq; 
+if ANNDATS gt rdqfinal then delete; 
+run;
+
+PROC SORT DATA=_fcastrdq;
+BY TICKER FPEDATS ANNDATS;
+RUN;
+
+
+proc print data=_fcastrdq (obs=100);
+	var TICKER FPEDATS ANNDATS rdqfinal;
+	run; 
+
+data _fcastrdq;
+set _fcastrdq;
+by TICKER FPEDATS;
+if last.FPEDATS;
+run;
+
+proc print data=_fcastrdq (obs=100);
+	var TICKER FPEDATS ANNDATS rdqfinal;
+	run; 
+
+*merge back to all compustat crsp data;
+proc sql;
+create table _temp1 as select a.*, b.value, b.fdatadate, b.rdqfinal, b.ANNDATS from dimmod.compcrsp a inner join _fcastrdq b
+on (a.permno=b.permno) and (a.datadate=b.datadate) ;
+quit;
+
+*collect closest shares outstanding to forecast date from crsp daily!;
+proc sql;
+create table _temp11 as select a.*, b.date, b.SHROUT from _temp1 a left join rawcrsp.dsf b
+on (a.permno=b.permno) and (a.ANNDATS=b.date);
+quit;
+
+
+
+
+
+proc print data=_temp11 (obs=111);
+	var permno datadate ni ibx shsfye SHOUT pxfye PRICE ACTUAL OPREPSX ACTUALFEARNINGS FCASTEARNINGS rdqfinal;
+	run; 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+*I merge my dimmod.announcenext file to Statsum file by ibes ticker and fdatadate=fpedats. I then keep the nearest forecast prior to the announcement date (rdqfinal).
+;
+
+proc sql;
+create table _fcastrdq as select a.*, b.rdqfinal, b.datadate, b.fdatadate, b.permno from rawibes.NSTATSUM_EPSUS a inner join dimmod.announcenext b
+on (a.ticker=b.ticker) and (a.FPEDATS=b.fdatadate) 
+where a.measure="EPS" and a.fpi in ("2") and a.fiscalp=("ANN");
+quit;
+
+data _fcastrdq; set _fcastrdq; 
+if STATPERS gt rdqfinal then delete; 
+run;
+
+PROC SORT DATA=_fcastrdq;
+BY TICKER FPEDATS STATPERS;
+RUN;
+
+proc print data=_fcastrdq (obs=100);
+	var TICKER FPEDATS STATPERS rdqfinal;
+	run; 
+
+data _fcastrdq;
+set _fcastrdq;
+by TICKER FPEDATS;
+if last.FPEDATS;
+run;
+
+
+*from the ibes actual file plus price anciliary file I collect actual values, stock price and shares outstanding in the date of the
+statistical period? STATPERS is the time when the consensus forecasts are calcualted;
+proc sql;
+create table _temp as select a.*, b.PRICE, b.SHOUT, b.fy0edats, b.FY0A from _fcastrdq a left join rawibes.Nactpsum_epsUS b
 on a.ticker=b.ticker and a.STATPERS=b.STATPERS;
 quit;
 
@@ -66,44 +227,74 @@ quit;
 THERE ARE MANY FORECASTS FOR EACH FISCAL YEAR, I WILL TAKE THE LAST FORECAST AS THE BASIS FOR CALCULATING EARNINGS SURPRISE;
 *actual is actual earnings;
 *MEDEST is the median of all the forecastes avaiable, which is the consensus forecasts, some researchers may use mean, but it shouldn't matter;
-data sum;
-set sum;
-if price gt 0 then SUR=(actual-MEDEST)/price;
+data _temp2;
+set _temp;
+if SHOUT le 0 then delete;
+if SHOUT gt 0 then FCASTEARNINGS=MEDEST*SHOUT;
+if SHOUT gt 0 then ACTUALFEARNINGS=ACTUAL*SHOUT;
+keep FCASTEARNINGS ACTUALFEARNINGS ticker datadate fdatadate rdqfinal PRICE SHOUT ACTUAL MEDEST permno;
 run;
+
+
+*merge back to all compustat crsp data;
+proc sql;
+create table _temp11 as select a.*, b.* from dimmod.compcrsp a inner join _temp2 b
+on (a.permno=b.permno) and (a.datadate=b.datadate) ;
+quit;
+
+
+proc print data=_temp11 (obs=111);
+	var permno datadate ni ibx shsfye SHOUT pxfye PRICE MEDEST ACTUAL OPREPSX ACTUALFEARNINGS FCASTEARNINGS rdqfinal;
+	run; 
+
+
+
+
+
+
+if FCASTERR eq . then delete;
+*I generate a sata file dimmod.comperged as my Compustat Crsp Universe;
+proc export 
+data= dimmod.compcrsp
+dbms=dta
+outfile="C:\Users\penarome\Desktop\Academic\UNCPP2HL\modified\compcrsp.dta"
+replace;
+run;
+
+*if STATPERS gt rdqfinal then delete; 
 *PICK THE LAST FORECAST HERE, BUT BEFORE EARNINGS ANNOUNCEMENT;
 	*step 1 deletes cases where actual announcement date exists and statpers exists, but announcement date is  is before 
 	the statper date (suspicious observations);
-data sum;
-set sum;
+data _sum;
+set _sum;
 if (ANNDATS_ACT ne .) and (STATPERS ne .) and (ANNDATS_ACT le STATPERS) THEN delete; 
 run;
 	*step 2 assumes that If ANNDATS_ACT is missing, then I assume that the last forecast for each TICKER-FPEDATS group
 	is made before the earnings announcement date, which is generally the case;
-PROC SORT DATA=sum;
+PROC SORT DATA=_sum;
 BY TICKER FPEDATS STATPERS;
 RUN;
 *SUR has the earnings surprises for each firm;
-data sum;
-set sum;
+data _sum;
+set _sum;
 by TICKER FPEDATS;
 if last.FPEDATS;
 run;
 *FPEDATS IS ESSENTIALLY THE DATADATE VARIABLE IN COMPUSTAT;
-data sum;
-set sum;
+data _sum;
+set _sum;
 if sur eq . then delete;
 run;
 
 *link permno to tickers in surprise file duplicates generated;
 proc sql;
-create table sum as select a.*, b.permno from sum a left join rawibes.iclinc b
+create table _sum as select a.*, b.permno from _sum a left join rawibes.iclinc b
 on a.ticker=b.ticker
 where (b.score le 4) and b.permno ne .;
 quit;
 
-
-data dimmod.sum;
-set sum;
+data dimmod._sum;
+set _sum;
 run;
 
 
